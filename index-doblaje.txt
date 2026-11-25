@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dobla tu clip</title>
+<style>
+  :root{--bg:#f6f1e7;--card:#fff;--ink:#1d1b16;--mut:#6b665b;--acc:#d9480f;--ok:#2b8a3e;--line:#e4dccb}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+  main{max-width:560px;margin:0 auto;padding:16px 14px 48px}
+  h1{font-size:1.6rem;margin:8px 0 2px}
+  .sub{color:var(--mut);margin:0 0 16px}
+  section{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:14px;margin-bottom:12px}
+  h2{font-size:1rem;margin:0 0 10px}
+  h2 span{display:inline-block;background:var(--ink);color:#fff;border-radius:50%;width:24px;height:24px;text-align:center;line-height:24px;font-size:.85rem;margin-right:8px}
+  button,.btn{display:block;width:100%;border:0;border-radius:12px;padding:14px;font-size:1rem;font-weight:600;background:var(--ink);color:#fff;text-align:center;text-decoration:none;cursor:pointer;margin-top:8px}
+  button.rec{background:var(--acc)}
+  button.sec{background:#ece5d3;color:var(--ink)}
+  button:disabled{opacity:.4;cursor:not-allowed}
+  input[type=file]{width:100%;padding:10px;border:2px dashed var(--line);border-radius:12px;background:#fcfaf5}
+  video{width:100%;max-height:60vh;background:#000;border-radius:12px;display:block}
+  label{display:block;font-weight:600;margin-top:10px}
+  input[type=range]{width:100%}
+  .row{display:flex;justify-content:space-between;color:var(--mut);font-size:.9rem}
+  .note{color:var(--mut);font-size:.9rem;margin:8px 0 0}
+  .status{margin-top:8px;font-weight:600}
+  .status.err{color:#c92a2a}.status.ok{color:var(--ok)}
+  .dot{display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--acc);margin-right:6px;animation:b 1s infinite}
+  @keyframes b{50%{opacity:.2}}
+  .hide{display:none}
+  progress{width:100%;height:14px}
+</style>
+</head>
+<body>
+<main>
+  <h1>🎤 Dobla tu clip</h1>
+  <p class="sub">Sube un vídeo, graba tu voz mientras se ve y descárgalo. Todo se queda en tu móvil.</p>
+
+  <section>
+    <h2><span>1</span>Elige tu clip</h2>
+    <input id="file" type="file" accept="video/*">
+    <video id="vid" class="hide" playsinline controls preload="auto"></video>
+    <div id="fileMsg" class="status"></div>
+  </section>
+
+  <section id="s2" class="hide">
+    <h2><span>2</span>Graba tu voz</h2>
+    <label for="recVol">Sonido original mientras grabas: <b id="recVolV">0%</b></label>
+    <input id="recVol" type="range" min="0" max="100" value="0">
+    <p class="note">Con 0% grabas en silencio sobre el vídeo. Si lo subes, usa auriculares o el micrófono captará el sonido del clip.</p>
+    <button id="recBtn" class="rec" type="button">● Grabar desde el principio</button>
+    <button id="stopBtn" class="sec hide" type="button">■ Parar</button>
+    <div id="recMsg" class="status"></div>
+  </section>
+
+  <section id="s3" class="hide">
+    <h2><span>3</span>Mezcla y descarga</h2>
+    <label for="origVol">Sonido original en el resultado: <b id="origVolV">20%</b></label>
+    <input id="origVol" type="range" min="0" max="100" value="20">
+    <div class="row"><span>0% = solo tu voz</span><span>100% = como el clip</span></div>
+    <label for="voiceVol">Tu voz: <b id="voiceVolV">100%</b></label>
+    <input id="voiceVol" type="range" min="0" max="200" value="100">
+    <button id="prevBtn" class="sec" type="button">▶ Probar mezcla</button>
+    <button id="expBtn" type="button">Crear vídeo final</button>
+    <p class="note">Crear el vídeo final dura lo mismo que el clip (se procesa mientras se reproduce). No cambies de pestaña ni bloquees la pantalla.</p>
+    <progress id="prog" class="hide" max="1" value="0"></progress>
+    <div id="expMsg" class="status"></div>
+    <div id="result" class="hide">
+      <video id="outVid" playsinline controls></video>
+      <a id="dl" class="btn" download="doblaje.webm">⬇ Descargar vídeo</a>
+    </div>
+  </section>
+</main>
+
+<script>
+(function(){
+  var $ = function(id){return document.getElementById(id)};
+  var vid=$('vid'), file=$('file');
+  var voiceBlob=null, voiceUrl=null, voiceAudio=null, mediaRec=null, micStream=null, chunks=[];
+  var srcUrl=null, resultUrl=null;
+  var busy=false;
+
+  function msg(el,t,cls){el.textContent=t;el.className='status'+(cls?' '+cls:'')}
+  function pct(inp,out){out.textContent=inp.value+'%'}
+  ['recVol','origVol','voiceVol'].forEach(function(id){
+    var i=$(id),o=$(id+'V');
+    i.addEventListener('input',function(){pct(i,o); if(id==='origVol'&&previewing)vid.volume=i.value/100; if(id==='voiceVol'&&voiceAudio)voiceAudio.volume=Math.min(1,i.value/100);});
+  });
+
+  file.addEventListener('change',function(){
+    var f=file.files&&file.files[0]; if(!f)return;
+    resetVoice();
+    if(srcUrl)URL.revokeObjectURL(srcUrl);
+    srcUrl=URL.createObjectURL(f);
+    vid.src=srcUrl; vid.classList.remove('hide'); vid.muted=false; vid.volume=1;
+    msg($('fileMsg'),'Cargando…');
+    vid.onloadedmetadata=function(){
+      msg($('fileMsg'),'Clip listo ('+Math.round(vid.duration)+' s)','ok');
+      $('s2').classList.remove('hide');
+    };
+    vid.onerror=function(){msg($('fileMsg'),'Este móvil no puede leer ese vídeo. Prueba con otro formato (mp4).','err')};
+  });
+
+  function resetVoice(){
+    voiceBlob=null; if(voiceUrl)URL.revokeObjectURL(voiceUrl); voiceUrl=null; voiceAudio=null;
+    $('s3').classList.add('hide'); $('result').classList.add('hide');
+    msg($('recMsg'),''); msg($('expMsg'),'');
+  }
+
+  var previewing=false;
+  function pickMime(list){
+    if(!window.MediaRecorder)return '';
+    for(var i=0;i<list.length;i++){ if(MediaRecorder.isTypeSupported(list[i]))return list[i]; }
+    return '';
+  }
+
+  $('recBtn').addEventListener('click',function(){
+    if(busy)return;
+    if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia||!window.MediaRecorder){
+      msg($('recMsg'),'Este navegador no puede grabar audio. Abre la página en Chrome.','err');return;}
+    msg($('recMsg'),'Pidiendo permiso de micrófono…');
+    navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true}}).then(function(stream){
+      micStream=stream; chunks=[];
+      var mime=pickMime(['audio/webm;codecs=opus','audio/webm','audio/mp4','audio/ogg;codecs=opus']);
+      mediaRec=mime?new MediaRecorder(stream,{mimeType:mime}):new MediaRecorder(stream);
+      mediaRec.ondataavailable=function(e){if(e.data&&e.data.size)chunks.push(e.data)};
+      mediaRec.onstop=onRecStop;
+      busy=true;
+      vid.pause(); vid.currentTime=0; vid.volume=$('recVol').value/100; vid.controls=false;
+      mediaRec.onstart=function(){
+        vid.play().then(function(){
+          msg($('recMsg'),'','');
+          $('recMsg').innerHTML='<span class="dot"></span>Grabando… habla ahora';
+        }).catch(function(){stopRec();msg($('recMsg'),'No se pudo reproducir el vídeo.','err')});
+      };
+      mediaRec.start();
+      $('recBtn').classList.add('hide'); $('stopBtn').classList.remove('hide');
+      vid.onended=stopRec;
+    }).catch(function(e){
+      var m=(e&&e.name==='NotAllowedError')?'Permiso de micrófono denegado. Actívalo en los ajustes del sitio (candado junto a la dirección) y vuelve a probar.':'No se pudo usar el micrófono: '+(e&&e.name||'error');
+      msg($('recMsg'),m,'err');
+    });
+  });
+  $('stopBtn').addEventListener('click',stopRec);
+  function stopRec(){
+    if(mediaRec&&mediaRec.state!=='inactive')mediaRec.stop();
+    vid.pause(); vid.onended=null;
+  }
+  function onRecStop(){
+    if(micStream){micStream.getTracks().forEach(function(t){t.stop()});micStream=null}
+    vid.controls=true; vid.volume=1; busy=false;
+    $('recBtn').classList.remove('hide'); $('stopBtn').classList.add('hide');
+    $('recBtn').textContent='● Grabar otra vez';
+    var type=(mediaRec&&mediaRec.mimeType)||'audio/webm';
+    voiceBlob=new Blob(chunks,{type:type});
+    if(voiceBlob.size<500){msg($('recMsg'),'No se grabó nada. Prueba otra vez.','err');return}
+    if(voiceUrl)URL.revokeObjectURL(voiceUrl);
+    voiceUrl=URL.createObjectURL(voiceBlob);
+    voiceAudio=new Audio(voiceUrl); voiceAudio.preload='auto';
+    msg($('recMsg'),'Voz grabada ✓','ok');
+    $('s3').classList.remove('hide'); $('result').classList.add('hide'); msg($('expMsg'),'');
+  }
+
+  // Preview: video + voice together
+  $('prevBtn').addEventListener('click',function(){
+    if(busy||!voiceAudio)return;
+    if(previewing){stopPreview();return}
+    previewing=true; $('prevBtn').textContent='■ Parar prueba';
+    vid.pause(); vid.currentTime=0; vid.volume=$('origVol').value/100;
+    voiceAudio.currentTime=0; voiceAudio.volume=Math.min(1,$('voiceVol').value/100);
+    Promise.all([vid.play(),voiceAudio.play()]).catch(function(){stopPreview()});
+    vid.onended=stopPreview;
+  });
+  function stopPreview(){
+    previewing=false; $('prevBtn').textContent='▶ Probar mezcla';
+    vid.pause(); if(voiceAudio)voiceAudio.pause(); vid.volume=1; vid.onended=null;
+  }
+
+  // Export: play video + voice through WebAudio, record the result
+  $('expBtn').addEventListener('click',function(){
+    if(busy||!voiceBlob)return;
+    if(previewing)stopPreview();
+    var AC=window.AudioContext||window.webkitAudioContext;
+    if(!AC||!window.MediaRecorder||!(vid.captureStream||vid.mozCaptureStream)){
+      msg($('expMsg'),'Este navegador no puede crear el vídeo. Usa Chrome.','err');return}
+    busy=true; $('expBtn').disabled=true; $('prevBtn').disabled=true; $('recBtn').disabled=true;
+    $('result').classList.add('hide');
+    msg($('expMsg'),'Preparando…');
+    var ctx=new AC();
+    voiceBlob.arrayBuffer().then(function(ab){
+      return new Promise(function(res,rej){ctx.decodeAudioData(ab,res,rej)});
+    }).then(function(buf){
+      var dest=ctx.createMediaStreamDestination();
+      var vg=ctx.createGain(); vg.gain.value=$('voiceVol').value/100;
+      var bs=ctx.createBufferSource(); bs.buffer=buf; bs.connect(vg); vg.connect(dest);
+      var og=ctx.createGain(); og.gain.value=$('origVol').value/100;
+      return {ctx:ctx,dest:dest,bs:bs,og:og,buf:buf};
+    }).then(function(o){ return runExport(o) }).catch(function(e){
+      fail('No se pudo crear el vídeo ('+(e&&e.message||e)+').');
+    });
+  });
+
+  function fail(t){
+    busy=false; $('expBtn').disabled=false;$('prevBtn').disabled=false;$('recBtn').disabled=false;
+    $('prog').classList.add('hide'); msg($('expMsg'),t,'err');
+  }
+
+  function runExport(o){
+    // Use a fresh clone of the video so the element-source limitation never blocks a second export
+    var v=document.createElement('video');
+    v.src=srcUrl; v.playsInline=true; v.preload='auto'; v.muted=false; v.style.cssText='position:fixed;left:-9999px;width:2px;height:2px';
+    document.body.appendChild(v);
+    var ctx=o.ctx;
+    return new Promise(function(res,rej){
+      v.onloadedmetadata=res; v.onerror=function(){rej(new Error('vídeo'))};
+    }).then(function(){
+      var src=ctx.createMediaElementSource(v);
+      src.connect(o.og); o.og.connect(o.dest); // not connected to speakers: silent export
+      var cap=(v.captureStream||v.mozCaptureStream).call(v);
+      var out=new MediaStream();
+      cap.getVideoTracks().forEach(function(t){out.addTrack(t)});
+      o.dest.stream.getAudioTracks().forEach(function(t){out.addTrack(t)});
+      var mime=pickMime(['video/mp4;codecs=avc1,mp4a.40.2','video/mp4','video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm']);
+      var rec=mime?new MediaRecorder(out,{mimeType:mime,videoBitsPerSecond:5000000}):new MediaRecorder(out);
+      var parts=[];
+      rec.ondataavailable=function(e){if(e.data&&e.data.size)parts.push(e.data)};
+      var done=new Promise(function(r){rec.onstop=r});
+      $('prog').classList.remove('hide'); $('prog').value=0;
+      var dur=v.duration;
+      var tick=setInterval(function(){
+        $('prog').value=Math.min(1,v.currentTime/dur);
+        msg($('expMsg'),'Creando vídeo… '+Math.round(100*v.currentTime/dur)+'%');
+      },300);
+      v.currentTime=0;
+      return ctx.resume().then(function(){
+        rec.start(1000);
+        o.bs.start(ctx.currentTime+0.05);
+        return v.play();
+      }).then(function(){
+        return new Promise(function(r){v.onended=r});
+      }).then(function(){
+        clearInterval(tick);
+        rec.stop(); return done;
+      }).then(function(){
+        var type=(rec.mimeType||mime||'video/webm').split(';')[0];
+        var blob=new Blob(parts,{type:type});
+        if(resultUrl)URL.revokeObjectURL(resultUrl);
+        resultUrl=URL.createObjectURL(blob);
+        var ext=type.indexOf('mp4')>=0?'mp4':'webm';
+        $('outVid').src=resultUrl; $('dl').href=resultUrl; $('dl').download='doblaje.'+ext;
+        $('result').classList.remove('hide');
+        $('prog').classList.add('hide');
+        msg($('expMsg'),'Listo ✓ ('+(blob.size/1048576).toFixed(1)+' MB, .'+ext+')','ok');
+        busy=false; $('expBtn').disabled=false;$('prevBtn').disabled=false;$('recBtn').disabled=false;
+        document.body.removeChild(v); ctx.close();
+      });
+    });
+  }
+})();
+</script>
+</body>
+</html>
